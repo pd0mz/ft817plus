@@ -1,0 +1,113 @@
+#!/usr/bin/env python2
+#
+# Basic serial emulator for the Yaesu FT-817 line radios
+#
+
+import serial
+import time
+import random
+
+def to_bcd(f, length):
+    data = [0] * ((length + 1) // 2)
+    if length & 1:
+        data[length // 2] &= 0x0f
+        data[length // 2] |= (f % 10) << 0x04
+        f //= 10
+    for i in xrange((length // 2) - 1, -1, -1):
+        a = f % 10
+        f //= 10
+        a |= (f % 10) << 4
+        f //= 10
+        data[i] = a
+    return map(chr, data)
+
+class FT817(object):
+    last = []
+    timers = {
+        'tx':    lambda t: (t % 20 >= 10),            # switch every 10 seconds
+        'mode':  lambda t: chr([8, 1][(t % 4 > 2)]),  # switch every 2 seconds
+        'power': lambda t: (t % 4),                   # switch every second
+        'vswr':  lambda t: 1 + (t % 15),
+        'mod':   lambda t: random.randint(0, 15),
+        'alc':   lambda t: random.randint(0, 15),
+    }
+
+    def __init__(self, port, baudrate=38400):
+        print 'setup'
+        self.bus = serial.Serial(port=port, baudrate=baudrate)
+
+    def init(self, frequency, shift):
+        print 'init'
+        self.frequency = frequency
+        self.shift = shift
+
+    def loop(self):
+        print 'loop'
+        while True:
+            sequence = self.recv()
+            if sequence in self.commands:
+                print 'got', ' '.join(map(hex, map(ord, sequence)))
+                hook = self.commands[sequence]
+                print '   ', hook.__name__
+                self.send(hook(self, int(time.time())))
+
+    def recv(self):
+        byte = self.bus.read(1)
+        self.last.append(byte)
+        if len(self.last) > 5:
+            self.last = self.last[-5:]
+        return ''.join(self.last)
+
+    def send(self, sequence):
+        print 'out', ' '.join(map(hex, map(ord, sequence)))
+        self.bus.write(''.join(sequence))
+
+    def gen_freq_mode(self, t):
+        return to_bcd(self.frequency, 8) + [self.timers['mode'](t)]
+
+    def gen_rx_status(self, t):
+        s_meter = random.randint(0, 15)
+        return [
+            chr(s_meter | (1 << 5) | (1 << 6) | (0 << 7))
+        ]
+
+    def gen_tx_status(self, t):
+        transmitting = self.timers['tx'](t)
+        if transmitting:
+            return chr(
+                self.timers['power'](t)
+                | (1 << 5)
+                | (1 << 6)
+                | (1 << 7)
+            )
+        else:
+            return '\x00'
+
+    def gen_tx_meters(self, t):
+        transmitting = self.timers['tx'](t)
+        if transmitting:
+            power = self.timers['power'](t)
+            vswr  = self.timers['vswr'](t)
+            mod   = self.timers['mod'](t)
+            alc   = self.timers['alc'](t)
+            if not (power << 4 | vswr):
+                print 'both 0'
+                exit
+            return [
+                chr(vswr | power << 4),
+                chr(mod  | alc   << 4),
+            ]
+        else:
+            return '\x00'
+
+    commands = {
+        '\x00\x00\x00\x00\x03': gen_freq_mode,
+        '\x00\x00\x00\x00\xbd': gen_tx_meters,
+        '\x00\x00\x00\x00\xe7': gen_rx_status,
+        '\x00\x00\x00\x00\xf7': gen_tx_status,
+    }
+
+if __name__ == '__main__':
+    rig = FT817('/dev/ttyUSB0')
+    rig.init(430200000L, -600000)
+    rig.loop()
