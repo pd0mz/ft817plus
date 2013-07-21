@@ -8,3 +8,8 @@ test: upload emulate
 
 emulate:
 	python2 ../bin/ft817-emulator
+
+debug: upload serial
+
+serial:
+	cu -l /dev/ttyUSB0 -s 38400
