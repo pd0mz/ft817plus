@@ -7,6 +7,8 @@
 #include "keys.h"
 #include "settings.h"
 #include "radio.h"
+#include "band.h"
+#include "bookmark.h"
 
 Key keys(A0);
 Radio radio;
@@ -29,6 +31,9 @@ struct Status {
     byte          power;
     byte          alc;
     byte          mod;
+
+    /* Keys */
+    byte          key;
 };
 
 Status current = {ACTIVITY_DISPLAY};
@@ -37,15 +42,19 @@ Status last = {ACTIVITY_DISPLAY};
 void display_begin();
 
 void setup() {
-    // Setup serial to pc
     Serial.begin(38400);
-    //Serial.println("setup");
+    Serial.println("setup");
+    Serial.println(get_bookmark(145600000));
 
     // Setup LCD display
+    pinMode(PIN_BACKLIGHT, OUTPUT);
+    analogWrite(PIN_BACKLIGHT, conf_disp.get() * 25);
+
     lcd.begin(16, 2);
     display_begin();
 
     // Setup serial to rig
+    Serial.println("setup rig cat");
     rig.begin(38400);
 
     // Setup defaults
@@ -53,10 +62,19 @@ void setup() {
     current.rig_ping = conf_ping.get();
 
     // Setup menu
+    Serial.println("setup menu");
     setup_menu();
 
     // Set default activity
-    activity = ACTIVITY_DISPLAY;
+    current.activity = ACTIVITY_DISPLAY;
+    last.activity = ACTIVITY_NONE;
+
+    // Set keys
+    current.key = KEY_NONE;
+    last.key = KEY_NONE;
+
+    // Setup done
+    Serial.println("setup done");
 }
 
 void config_update() {
@@ -64,10 +82,10 @@ void config_update() {
     MenuItem* opt = sub->getActive();
     lcd.clear();
     lcd.setCursor(0x0, 0);
-    lcd.write((uint8_t) 0);
+    lcd.write(2);
     lcd.print(sub->getName());
     lcd.setCursor(0xf, 0);
-    lcd.write(1);
+    lcd.write(3);
     lcd.setCursor(0x0, 1);
     lcd.write(2);
     lcd.print(opt->getName());
@@ -125,6 +143,50 @@ void config_change(MenuItemEvent event) {
         conf_ping.set(RIG_PING_15);
         current.rig_ping = 15;
     }
+    if (!strcmp(event.item.getName(), "Backlight  off")) {
+        conf_disp.set(DISP_000);
+        analogWrite(PIN_BACKLIGHT, 0);
+    }
+    if (!strcmp(event.item.getName(), "Backlight  10%")) {
+        conf_disp.set(DISP_010);
+        analogWrite(PIN_BACKLIGHT, 25);
+    }
+    if (!strcmp(event.item.getName(), "Backlight  20%")) {
+        conf_disp.set(DISP_020);
+        analogWrite(PIN_BACKLIGHT, 50);
+    }
+    if (!strcmp(event.item.getName(), "Backlight  30%")) {
+        conf_disp.set(DISP_030);
+        analogWrite(PIN_BACKLIGHT, 75);
+    }
+    if (!strcmp(event.item.getName(), "Backlight  40%")) {
+        conf_disp.set(DISP_040);
+        analogWrite(PIN_BACKLIGHT, 100);
+    }
+    if (!strcmp(event.item.getName(), "Backlight  50%")) {
+        conf_disp.set(DISP_050);
+        analogWrite(PIN_BACKLIGHT, 125);
+    }
+    if (!strcmp(event.item.getName(), "Backlight  60%")) {
+        conf_disp.set(DISP_060);
+        analogWrite(PIN_BACKLIGHT, 150);
+    }
+    if (!strcmp(event.item.getName(), "Backlight  70%")) {
+        conf_disp.set(DISP_070);
+        analogWrite(PIN_BACKLIGHT, 175);
+    }
+    if (!strcmp(event.item.getName(), "Backlight  80%")) {
+        conf_disp.set(DISP_080);
+        analogWrite(PIN_BACKLIGHT, 200);
+    }
+    if (!strcmp(event.item.getName(), "Backlight  90%")) {
+        conf_disp.set(DISP_090);
+        analogWrite(PIN_BACKLIGHT, 225);
+    }
+    if (!strcmp(event.item.getName(), "Backlight full")) {
+        conf_disp.set(DISP_100);
+        analogWrite(PIN_BACKLIGHT, 250);
+    }
     config_update();
 }
 
@@ -142,24 +204,6 @@ void config_select(MenuItemEvent event) {
 }
 
 void config_loop() {
-    byte key = keys.getKey();
-    switch (key) {
-        case KEY_UP:
-            menu.prev();
-            break;
-        case KEY_DOWN:
-            menu.next();
-            break;
-        case KEY_LEFT:
-            menu.getActive()->prev();
-            break;
-        case KEY_RIGHT:
-            menu.getActive()->next();
-            break;
-        case KEY_SELECT:
-            menu.select();
-            break;
-    }
 }
 
 void display_spam() {
@@ -196,15 +240,11 @@ void display_frequency_mode(FrequencyMode fm) {
 
     // See if we have a memory location for this frequency, if so, print the name
     // rather than the numeric frequency
-    boolean label = false;
-    for (byte i = 0; repeaters[i].frequency > 0; i++) {
-        if (repeaters[i].frequency == fm.frequency) {
-            lcd.print(repeaters[i].callsign);
-            lcd.print("     ");
-            label = true;
-        }
-    }
-    if (!label) {
+    const char* name = get_bookmark(fm.frequency);
+    if (name != NULL) {
+        lcd.print(name);
+        lcd.print("     ");
+    } else {
         unsigned int Hz  = (fm.frequency % 1000);
         unsigned int kHz = (fm.frequency / 1000) % 1000;
         unsigned int MHz = (fm.frequency / 1000000) % 1000;
@@ -232,14 +272,8 @@ void display_frequency_mode(FrequencyMode fm) {
         }
         lcd.print(Hz);
     }
-    for (byte i = 0; bands[i].symbol != 0; i++) {
-        if (fm.frequency >= bands[i].frequency_start &&
-                fm.frequency <= bands[i].frequency_stop) {
-            lcd.write(bands[i].symbol);
-            return;
-        }
-    }
-    lcd.write('X');
+    lcd.setCursor(15, 0);
+    lcd.write(get_band_symbol(fm.frequency));
 }
 
 void display_power() {
@@ -281,77 +315,42 @@ void display_smeter() {
     display_scale(last.rx.s_meter, 8);
 }
 
-unsigned long fake_frequency = 0;
-byte          fake_s_meter   = 0;
-byte          fake_mode      = 8;
-boolean       fake_transmit  = false;
-byte          fake_power     = 5;
 byte          tick           = 0;
 
 void display_loop() {
-    byte key;
-    if (splash < (6 * 16)) {
-        if (splash == 0) {
-            display_begin();
-        }
-        splash++;
-        display_spam();
-        int l = splash;
-        int b = l % 6;
-        int x = (l - b) / 6;
-        lcd.setCursor(x, 1);
-        lcd.write(display_bar[b]);
-    }
-    else if (splash == (6 * 16)) {
-        splash++;
-        lcd.setCursor(0, 0);
-        //lcd.print("RX 145.662.500-N");
-        lcd.print("Contacting rig..");
-        lcd.setCursor(0, 1);
-    }
-    else {
-        if (last.transmitting) {
-            display_power();
+    if (last.transmitting) {
+        display_power();
+    } else {
+        if (last.fm.frequency == 0) {
+            display_spam();
+            lcd.setCursor(0, 1);
+            //         0123456789ABCDEF
+            lcd.print("Lost rig contact");
         } else {
-            if (last.fm.frequency == 0) {
-                display_spam();
-                lcd.setCursor(0, 1);
-                //         0123456789ABCDEF
-                lcd.print("Lost rig contact");
-            } else {
-                // Update the readings, but only if there is a change
-                if (current.rx.s_meter != last.rx.s_meter ||
-                    current.fm.frequency != last.fm.frequency ||
-                    current.fm.mode != last.fm.mode) {
-                    display_smeter();
-                    display_frequency_mode(last.fm);
-                    current.rx = last.rx;
-                    current.fm.frequency = last.fm.frequency;
-                    current.fm.mode = last.fm.mode;
-                }
+            // Update the readings, but only if there is a change
+            if (current.rx.s_meter != last.rx.s_meter ||
+                current.fm.frequency != last.fm.frequency ||
+                current.fm.mode != last.fm.mode) {
+                display_smeter();
+                display_frequency_mode(last.fm);
+                current.rx = last.rx;
+                current.fm.frequency = last.fm.frequency;
+                current.fm.mode = last.fm.mode;
             }
         }
-
-        // Give rig some slack
-        if ((tick++ % 8) == 0) {
-            last.fm = radio.getFrequencyMode();
-            last.tx = radio.getTXStatus();
-            last.rx = radio.getRXStatus();
-            last.tx_meters = radio.getTXMeters();
-            last.transmitting = (last.tx_meters.power != 0 ||
-                                 last.tx_meters.vswr  != 0);
-        }
-        delay(10);
-
-        // Check for keyboard input
-        key = keys.getKey();
-        switch (key) {
-            case KEY_SELECT:
-                current.activity = ACTIVITY_CONFIG;
-                config_begin();
-                break;
-        }
     }
+
+    // Give rig some slack
+    last.transmitting = (last.tx_meters.power != 0xff);
+    if (current.transmitting != last.transmitting ||
+        (tick++ % 8) == 0) {
+        last.fm = radio.getFrequencyMode();
+        last.tx = radio.getTXStatus();
+        last.rx = radio.getRXStatus();
+        last.tx_meters = radio.getTXMeters();
+        current.transmitting = last.transmitting;
+    }
+    delay(50);
 }
 
 void loop() {
@@ -361,6 +360,46 @@ void loop() {
             break;
         case ACTIVITY_CONFIG:
             config_loop();
+            break;
+    }
+
+    // Check for keyboard input
+    current.key = keys.getKey();
+    if (last.key == current.key) {
+        return;
+    }
+
+    last.key = current.key;
+    Serial.print("new key ");
+    Serial.println(last.key, HEX);
+    switch (current.activity) {
+        case ACTIVITY_DISPLAY:
+            switch (current.key) {
+                case KEY_BOTTOM:
+                    current.activity = ACTIVITY_CONFIG;
+                    config_begin();
+                    break;
+            }
+            break;
+
+        case ACTIVITY_CONFIG:
+            switch (current.key) {
+                case KEY_0A:
+                    menu.prev();
+                    break;
+                case KEY_0B:
+                    menu.next();
+                    break;
+                case KEY_1A:
+                    menu.getActive()->prev();
+                    break;
+                case KEY_1B:
+                    menu.getActive()->next();
+                    break;
+                case KEY_BOTTOM:
+                    menu.select();
+                    break;
+            }
             break;
     }
 }

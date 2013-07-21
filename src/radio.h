@@ -25,7 +25,7 @@
 #define CMD_RX_STATUS        0xe7
 #define CMD_TX_STATUS        0xf7
 
-SoftwareSerial rig = SoftwareSerial(2, 3); // rx, tx
+SoftwareSerial rig = SoftwareSerial(13, 12); // rx, tx
 
 /* prog_uchar RadioSMeter[][6] PROGMEM = { */
 const char RadioSMeter[][6] = {
@@ -103,7 +103,7 @@ struct TXStatus {
 class Radio {
 public:
   Radio() {
-    _timeout = 2000; // 2 seconds
+    _timeout = 50; // in ms
   }
   
   /* High level interface */
@@ -118,17 +118,20 @@ public:
     send(sequence, 5);
     
     // Wait until we have 5 bytes back
-    while (Serial.available() < 5) {
+    while (rig.available() < 5) {
       if ((millis() - start) > _timeout) {
         return fm;
       }
     }
     
     // Read 5 bytes
+    Serial.print("freq ");
     for (byte i = 0; i < 4; i++) {
       frequency[i] = read();
     }
-    fm.frequency = _from_bcd(frequency, 8);
+    Serial.print(" = ");
+    fm.frequency = _from_bcd(frequency, 8) * 10;
+    Serial.println(fm.frequency);
     fm.mode = read();
     return fm;
   }
@@ -145,6 +148,8 @@ public:
   
   RXStatus getRXStatus() {
     byte data = single(CMD_RX_STATUS);
+    Serial.print("RX status ");
+    Serial.println(data, DEC);
     RXStatus info = {
         (byte) (data & (byte) 0xf),
         (byte) (data >> 5 & 1) == 0,
@@ -156,8 +161,10 @@ public:
   
   TXMeters getTXMeters() {
     byte data = single(CMD_TX_METERS);
-    TXMeters info = {0, 0, 0, 0};
-    if (data == 0) {
+    Serial.print("TX meters ");
+    Serial.println(data, DEC);
+    TXMeters info = {0xff, 0xff, 0xff, 0xff};
+    if (data == 0xff) {
       return info;
     }
     info.power = (data >> 4 & 0xf);
@@ -170,6 +177,8 @@ public:
   
   TXStatus getTXStatus() {
     byte data = single(CMD_TX_STATUS);
+    Serial.print("TX status ");
+    Serial.println(data, DEC);
     TXStatus info = {
       (byte) (data & (byte) 0xf),
       (byte) (data >> 5 & 1) == 0,
@@ -196,23 +205,30 @@ public:
   /* Low level interface */
   
   byte read() {
+    byte data = 0;
     unsigned long start = millis();
-    while (Serial.available() < 1) {
+    while (rig.available() < 1) {
       if ((millis() - start) > _timeout) {
+        Serial.println("?? read timeout");
         return 0;
       }
     }
-    return Serial.read();
+    data = rig.read();
+    //Serial.print("<< ");
+    //Serial.println(data, DEC);
+    return data;
   }
       
   void send(byte sequence[], byte length) {
     for (byte i = 0; i < length; i++) {
-      Serial.write(sequence[i]);
+      //Serial.print(">> ");
+      //Serial.println(sequence[i], DEC);
+      rig.write(sequence[i]);
     }
   }
   
   void flush() {
-    Serial.flush();
+    rig.flush();
   }
 
 
